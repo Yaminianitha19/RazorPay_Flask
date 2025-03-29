@@ -1,30 +1,42 @@
 import stripe
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, redirect
 from twilio.rest import Client
 import os
 from dotenv import load_dotenv
 
-app = Flask(__name__)
+# Load environment variables first
 load_dotenv()
 
-# Stripe API Key
-stripe.api_key = os.getenv("STRIPE_API_KEY")
+# Initialize Flask app
+app = Flask(__name__,
+            static_url_path='',
+            static_folder='static')
 
-# Twilio Credentials
+# Stripe Configuration
+stripe.api_key = os.getenv("STRIPE_API_KEY")
+STRIPE_PUBLIC_KEY = os.getenv("STRIPE_PUBLIC_KEY")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+
+# Twilio Configuration
 TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER")
-USER_PHONE = "+919042444246"  # You might want to store this in your database for real applications
+USER_PHONE = os.getenv("USER_PHONE")
 
-# Load Stripe webhook secret
-WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+# Your domain configuration
+YOUR_DOMAIN = 'http://localhost:5000'
 
 def send_sms(amount=50.00):
     """Function to send SMS using Twilio"""
     try:
-        # Verify Twilio credentials
-        if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
-            raise ValueError("Twilio credentials are missing")
+        # Verify Twilio credentials and phone numbers
+        if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER, USER_PHONE]):
+            missing_vars = []
+            if not TWILIO_ACCOUNT_SID: missing_vars.append("TWILIO_ACCOUNT_SID")
+            if not TWILIO_AUTH_TOKEN: missing_vars.append("TWILIO_AUTH_TOKEN")
+            if not TWILIO_PHONE_NUMBER: missing_vars.append("TWILIO_PHONE_NUMBER")
+            if not USER_PHONE: missing_vars.append("USER_PHONE")
+            raise ValueError(f"Missing required Twilio configuration: {', '.join(missing_vars)}")
             
         print("\n=== Twilio Configuration ===")
         print(f"Account SID: {TWILIO_ACCOUNT_SID[:6]}...{TWILIO_ACCOUNT_SID[-4:]}")
@@ -32,14 +44,8 @@ def send_sms(amount=50.00):
         print(f"From Number: {TWILIO_PHONE_NUMBER}")
         print(f"To Number: {USER_PHONE}")
         
-        # Create Twilio client
+        # Create Twilio client with the correct credentials
         client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        
-        # Format phone numbers
-        if not USER_PHONE.startswith('+'):
-            USER_PHONE = '+' + USER_PHONE
-        if not USER_PHONE.startswith('+91'):
-            USER_PHONE = '+91' + USER_PHONE.lstrip('+')
             
         print("\n=== Attempting to send SMS ===")
         message = client.messages.create(
@@ -77,7 +83,29 @@ def send_sms(amount=50.00):
 
 @app.route("/")
 def home():
-    return render_template("index.html", key=os.getenv("STRIPE_PUBLIC_KEY"))
+    return render_template("index.html", key=STRIPE_PUBLIC_KEY)
+
+@app.route('/create-checkout-session', methods=['POST'])
+def create_checkout_session():
+    try:
+        checkout_session = stripe.checkout.Session.create(
+            line_items=[{
+                "price_data": {
+                    "currency": "usd",
+                    "product_data": {"name": "Test Product"},
+                    "unit_amount": 5000,  # $50.00
+                },
+                "quantity": 1,
+            }],
+            mode="payment",
+            success_url=YOUR_DOMAIN + "/success?payment_status=completed&amount=50.00&transaction_id={CHECKOUT_SESSION_ID}",
+            cancel_url=YOUR_DOMAIN + "/cancel",
+            metadata={"phone": USER_PHONE}  # Store phone number in metadata
+        )
+        return redirect(checkout_session.url, code=303)
+    except Exception as e:
+        print(f"Error creating checkout session: {str(e)}")
+        return str(e), 400
 
 @app.route("/pay", methods=["POST"])
 def pay():
@@ -94,11 +122,16 @@ def pay():
                 "quantity": 1,
             }],
             mode="payment",
-            success_url=request.host_url + "success",
-            cancel_url=request.host_url + "cancel",
+            success_url=YOUR_DOMAIN + "/success?payment_status=completed&amount=50.00&transaction_id={CHECKOUT_SESSION_ID}",
+            cancel_url=YOUR_DOMAIN + "/cancel",
             metadata={"phone": USER_PHONE}  # Store phone number in metadata
         )
-        return jsonify({"id": session.id})
+        
+        # Return the session ID to the frontend
+        return jsonify({
+            "id": session.id,
+            "success_url": session.success_url
+        })
     except Exception as e:
         print(f"Error creating checkout session: {str(e)}")
         return str(e), 400
@@ -118,7 +151,7 @@ def stripe_webhook():
         event = stripe.Webhook.construct_event(
             payload,
             sig_header,
-            WEBHOOK_SECRET
+            STRIPE_WEBHOOK_SECRET
         )
         print(f"\n=== Webhook Verified Successfully ===")
         print(f"Event Type: {event['type']}")
@@ -131,43 +164,63 @@ def stripe_webhook():
     except stripe.error.SignatureVerificationError as e:
         print(f"\n=== Webhook Error: Invalid Signature ===")
         print(f"Error: {str(e)}")
+        print(f"Webhook Secret Used: {STRIPE_WEBHOOK_SECRET[:6]}...")
         return jsonify({"error": "Invalid signature"}), 400
 
     # Handle different event types
     try:
-        if event["type"] == "payment_intent.succeeded":
-            payment_intent = event["data"]["object"]
-            print("\n=== Payment Intent Succeeded ===")
-            print(f"Payment Intent ID: {payment_intent['id']}")
-            print(f"Amount: ${payment_intent['amount']/100:.2f}")
-            print(f"Status: {payment_intent['status']}")
-            
-            # Send SMS notification for successful payment
-            if send_sms(payment_intent['amount']/100):
-                return jsonify({
-                    "message": "Payment processed and SMS sent",
-                    "payment_intent_id": payment_intent['id'],
-                    "amount": payment_intent['amount']/100
-                }), 200
-            else:
-                return jsonify({"error": "Failed to send SMS"}), 500
-
-        elif event["type"] == "payment_method.attached":
-            payment_method = event["data"]["object"]
-            print("\n=== Payment Method Attached ===")
-            print(f"Payment Method ID: {payment_method['id']}")
-            print(f"Type: {payment_method['type']}")
-            return jsonify({"message": "Payment method attached"}), 200
-
-        elif event["type"] == "checkout.session.completed":
+        if event["type"] == "checkout.session.completed":
             session = event["data"]["object"]
             amount = session["amount_total"] / 100
             
             print(f"\n=== Checkout Session Completed ===")
             print(f"Session ID: {session['id']}")
             print(f"Amount: ${amount:.2f}")
-            print(f"Customer Phone: {USER_PHONE}")
+            print(f"Customer Email: {session.get('customer_details', {}).get('email')}")
+            print(f"Customer Name: {session.get('customer_details', {}).get('name')}")
             print(f"Payment Status: {session.get('payment_status')}")
+            
+            # Create or update customer in Stripe
+            customer_email = session.get('customer_details', {}).get('email')
+            customer_name = session.get('customer_details', {}).get('name')
+            
+            if customer_email:
+                try:
+                    # Search for existing customer
+                    customers = stripe.Customer.list(email=customer_email)
+                    if customers.data:
+                        customer = customers.data[0]
+                        # Update customer if needed
+                        if customer_name and customer.name != customer_name:
+                            customer = stripe.Customer.modify(
+                                customer.id,
+                                name=customer_name
+                            )
+                    else:
+                        # Create new customer
+                        customer = stripe.Customer.create(
+                            email=customer_email,
+                            name=customer_name
+                        )
+                    
+                    print(f"Customer ID: {customer.id}")
+                    
+                    # Store payment details
+                    payment_intent = stripe.PaymentIntent.retrieve(session.payment_intent)
+                    payment_intent = stripe.PaymentIntent.modify(
+                        payment_intent.id,
+                        metadata={
+                            'customer_id': customer.id,
+                            'customer_email': customer_email,
+                            'customer_name': customer_name,
+                            'phone': session.get('metadata', {}).get('phone')
+                        }
+                    )
+                    
+                    print(f"Payment Intent updated with customer details")
+                    
+                except Exception as e:
+                    print(f"Error handling customer: {str(e)}")
             
             # Send SMS notification
             if send_sms(amount):
@@ -175,7 +228,9 @@ def stripe_webhook():
                     "message": "Payment processed and SMS sent",
                     "amount": amount,
                     "phone": USER_PHONE,
-                    "session_id": session['id']
+                    "session_id": session['id'],
+                    "customer_email": customer_email,
+                    "customer_name": customer_name
                 }), 200
             else:
                 return jsonify({"error": "Failed to send SMS"}), 500
@@ -194,7 +249,19 @@ def stripe_webhook():
 
 @app.route("/success")
 def success():
-    return render_template("success.html")
+    # Get payment information from session or query parameters
+    payment_status = request.args.get('payment_status', 'completed')
+    amount = request.args.get('amount', '50.00')
+    transaction_id = request.args.get('transaction_id', '')
+    
+    # If this is a direct access to success page without payment, redirect to home
+    if not transaction_id or transaction_id == '{CHECKOUT_SESSION_ID}':
+        return redirect('/')
+    
+    return render_template("success.html", 
+                         payment_status=payment_status,
+                         amount=amount,
+                         transaction_id=transaction_id)
 
 @app.route("/cancel")
 def cancel():
@@ -202,16 +269,17 @@ def cancel():
 
 if __name__ == "__main__":
     # Verify environment variables are set
-    required_env_vars = [
-        "STRIPE_API_KEY",
-        "STRIPE_PUBLIC_KEY",
-        "STRIPE_WEBHOOK_SECRET",
-        "TWILIO_ACCOUNT_SID",
-        "TWILIO_AUTH_TOKEN",
-        "TWILIO_PHONE_NUMBER"
-    ]
+    required_env_vars = {
+        "STRIPE_API_KEY": stripe.api_key,
+        "STRIPE_PUBLIC_KEY": STRIPE_PUBLIC_KEY,
+        "STRIPE_WEBHOOK_SECRET": STRIPE_WEBHOOK_SECRET,
+        "TWILIO_ACCOUNT_SID": TWILIO_ACCOUNT_SID,
+        "TWILIO_AUTH_TOKEN": TWILIO_AUTH_TOKEN,
+        "TWILIO_PHONE_NUMBER": TWILIO_PHONE_NUMBER,
+        "USER_PHONE": USER_PHONE
+    }
     
-    missing_vars = [var for var in required_env_vars if not os.getenv(var)]
+    missing_vars = [var for var, value in required_env_vars.items() if not value]
     if missing_vars:
         print("\n=== Missing Required Environment Variables ===")
         for var in missing_vars:
@@ -223,5 +291,5 @@ if __name__ == "__main__":
     print(f"- Twilio Account: {TWILIO_ACCOUNT_SID[:6]}...{TWILIO_ACCOUNT_SID[-4:]}")
     print(f"- Twilio Phone: {TWILIO_PHONE_NUMBER}")
     print(f"- User Phone: {USER_PHONE}")
-    print(f"- Stripe Webhook Secret: {WEBHOOK_SECRET[:6]}...")
+    print(f"- Stripe Webhook Secret: {STRIPE_WEBHOOK_SECRET[:6]}...")
     app.run(debug=True, port=5000)

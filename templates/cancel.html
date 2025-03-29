@@ -1,10 +1,12 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Payment Cancelled</title>
+    <title>Checkout canceled</title>
     <style>
         body {
-            font-family: Arial, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            font-size: 16px;
+            -webkit-font-smoothing: antialiased;
             display: flex;
             justify-content: center;
             align-items: center;
@@ -12,38 +14,51 @@
             margin: 0;
             background-color: #f0f2f5;
         }
-        .container {
-            text-align: center;
-            padding: 2rem;
-            background-color: white;
-            border-radius: 8px;
+        section {
+            background: #ffffff;
+            display: flex;
+            flex-direction: column;
+            width: 400px;
+            border-radius: 6px;
+            justify-content: space-between;
+            padding: 20px;
             box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
         }
-        h1 {
+        .cancel-icon {
+            font-size: 48px;
             color: #dc3545;
+            text-align: center;
+            margin-bottom: 1rem;
         }
-        p {
+        .message {
             color: #666;
+            margin: 1rem 0;
+            text-align: center;
         }
         .home-button {
             display: inline-block;
-            padding: 10px 20px;
-            background-color: #007bff;
-            color: white;
+            padding: 12px 16px;
+            background: #5469d4;
+            color: #ffffff;
             text-decoration: none;
             border-radius: 4px;
-            margin-top: 20px;
+            font-weight: 600;
+            margin-top: 1rem;
+            transition: all 0.3s ease;
+            text-align: center;
         }
         .home-button:hover {
-            background-color: #0056b3;
+            filter: brightness(110%);
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Payment Cancelled</h1>
-        <p>Your payment was cancelled. No charges were made.</p>
+    <section>
+        <div class="cancel-icon">✕</div>
+        <p class="message">
+            Forgot to add something to your cart? Shop around then come back to pay!
+        </p>
         <a href="/" class="home-button">Return to Home</a>
-    </div>
+    </section>
 </body>
 </html> 
